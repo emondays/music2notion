@@ -1,7 +1,6 @@
 import time
 import json
-from config import get_playlist_ids
-from netease_api import get_playlist_info, get_playlist_tracks
+from netease_api import get_playlist_info, get_playlist_tracks, get_playlist_ids
 from notion_api import sync_track_to_notion, verify_notion_database_structure, get_notion_tracks, mark_track_as_removed
 
 PROGRESS_FILE = 'sync_progress.json'
@@ -88,12 +87,15 @@ def sync_playlist(playlist_id):
     print(f"播放列表 '{playlist_name}' 同步完成")
 
 def main():
+    """
+    主函数，负责整个同步过程
+    """
     if not verify_notion_database_structure():
         print("Notion数据库结构验证失败，请检查并修复问题后重试。")
         return
 
     playlist_ids = get_playlist_ids()
-    print(f"将要同步的播放列表数量: {len(playlist_ids)}")
+    print(f"获取到的用户歌单数量: {len(playlist_ids)}")
 
     for playlist_id in playlist_ids:
         sync_playlist(playlist_id)

@@ -70,7 +70,13 @@ def get_playlist_tracks(playlist_id):
 
 @retry_on_failure()
 def get_user_playlists():
-    url = f"{BASE_URL}/user/playlist?uid={NETEASE_USER_ID}&limit=30&offset=0"
+    """
+    获取用户的所有歌单
+    
+    返回:
+    list: 包含用户所有歌单信息的列表
+    """
+    url = f"{BASE_URL}/user/playlist?uid={NETEASE_USER_ID}&limit=1000&offset=0"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         "Referer": "https://music.163.com/",
@@ -80,8 +86,19 @@ def get_user_playlists():
     if response.status_code == 200:
         data = response.json()
         if 'playlist' in data:
+            # 只返回用户创建的歌单，不包括收藏的歌单
             return [playlist for playlist in data['playlist'] if str(playlist['userId']) == NETEASE_USER_ID]
         else:
             print(f"意外的响应结构: {data}")
             raise Exception("获取用户播放列表失败。意外的响应结构。")
     raise Exception(f"获取用户播放列表失败。状态码: {response.status_code}")
+
+def get_playlist_ids():
+    """
+    获取用户的所有歌单ID
+    
+    返回:
+    list: 包含用户所有歌单ID的列表
+    """
+    playlists = get_user_playlists()
+    return [str(playlist['id']) for playlist in playlists]
