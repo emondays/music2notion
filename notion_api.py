@@ -3,6 +3,11 @@ from config import NOTION_TOKEN, NOTION_DATABASE_ID
 from datetime import datetime
 import time
 import pytz
+import logging
+
+# 修改日志配置
+logging.basicConfig(level=logging.ERROR, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 notion = Client(auth=NOTION_TOKEN)
 
@@ -27,10 +32,24 @@ def retry_on_failure(func):
 @retry_on_failure
 def get_notion_records():
     results = notion.databases.query(database_id=NOTION_DATABASE_ID).get('results', [])
-    return {record['properties']['音乐链接']['url'].split('=')[-1]: record for record in results}
+    records = {}
+    for index, record in enumerate(results):
+        try:
+            properties = record['properties']
+            music_link = properties.get('音乐链接', {}).get('url')
+            if music_link:
+                track_id = music_link.split('=')[-1]
+                records[track_id] = record
+            else:
+                logger.debug(f"Record {index} has no music link: {properties}")
+        except Exception as e:
+            logger.error(f"Error processing record {index}: {str(e)}")
+    
+    logger.debug(f"Total records processed: {len(records)}")
+    return records
 
 @retry_on_failure
-def sync_track_to_notion(track, playlist_name, status):
+def sync_track_to_notion(track, playlist_id, status, index, total, action):
     existing_records = get_notion_records()
     track_id = str(track['id'])
     
@@ -50,32 +69,42 @@ def sync_track_to_notion(track, playlist_name, status):
         "专辑": {"rich_text": [{"text": {"content": track.get('al', {}).get('name', "未知专辑")}}]},
         "发行日期": {"date": {"start": publish_time.isoformat() if publish_time else None}},
         "音乐链接": {"url": f"https://music.163.com/#/song?id={track['id']}"},
-        "播放列表": {"rich_text": [{"text": {"content": playlist_name}}]},
-        "状态": {"select": {"name": status, "color": "green" if status == "可用" else "red"}},
+        "播放列表": {"rich_text": [{"text": {"content": playlist_id}}]},
+        "状态": {"select": {"name": status, "color": get_status_color(status)}},
         "最后同步日期": {"date": {"start": current_time.isoformat()}},
+        "歌单ID": {"number": int(playlist_id)},
+        "歌曲ID": {"number": int(track_id)}
     }
     
-    if track_id in existing_records:
+    if action == "更新" and track_id in existing_records:
         notion.pages.update(
             page_id=existing_records[track_id]['id'],
             properties=properties
         )
-        return f"更新歌曲: {track.get('name', '未知歌曲')} - {track['ar'][0]['name'] if 'ar' in track and track['ar'] else '未知歌手'}"
     else:
         notion.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
             properties=properties
         )
-        return f"新增歌曲: {track.get('name', '未知歌曲')} - {track['ar'][0]['name'] if 'ar' in track and track['ar'] else '未知歌手'}"
-    
-    time.sleep(0.5)  # 添加0.5秒延迟
+
+    return f"[{index}/{total}] {action}歌曲: {track.get('name', '未知歌曲')} - ID: {track_id}, 状态: {status}, fee: {track.get('fee', 'N/A')}"
+
+def get_status_color(status):
+    status_colors = {
+        '可用': 'green',
+        'VIP': 'purple',
+        '无版权': 'yellow',
+        '已下架': 'red',
+        '未知': 'gray'
+    }
+    return status_colors.get(status, 'gray')
 
 @retry_on_failure
-def mark_track_as_removed(track_id, playlist_name):
+def mark_track_as_removed(track_id, playlist_id):
     existing_records = get_notion_records()
     if track_id in existing_records:
         record = existing_records[track_id]
-        if record['properties']['播放列表']['rich_text'][0]['text']['content'] == playlist_name:
+        if record['properties']['播放列表']['rich_text'][0]['text']['content'] == playlist_id:
             current_time = datetime.now(china_tz)
             notion.pages.update(
                 page_id=record['id'],
@@ -113,7 +142,7 @@ def verify_notion_database_structure():
         print(f"Existing title property found: {title_property}")
 
         required_properties = {
-            '歌名': {'rich_text': {}},  # 修改这一行
+            '歌名': {'rich_text': {}},
             '封面': {'files': {}},
             '专辑': {'rich_text': {}},
             '发行日期': {'date': {}},
@@ -130,7 +159,9 @@ def verify_notion_database_structure():
                     ]
                 }
             },
-            '最后同步日期': {'date': {}}
+            '最后同步日期': {'date': {}},
+            '单ID': {'number': {}},
+            '歌曲ID': {'number': {}}
         }
 
         properties_to_update = {}
@@ -162,16 +193,23 @@ def verify_notion_database_structure():
 def get_notion_tracks():
     results = notion.databases.query(database_id=NOTION_DATABASE_ID).get('results', [])
     tracks = []
-    for record in results:
+    for index, record in enumerate(results):
         properties = record['properties']
-        track = {
-            '歌手': properties.get(next(prop for prop, config in properties.items() if config['type'] == 'title'), {}).get('title', [{}])[0].get('text', {}).get('content', '未知歌手'),
-            '歌名': properties.get('歌名', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '未知歌曲'),
-            '专辑': properties.get('专辑', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '未知专辑'),
-            '音乐链接': properties.get('音乐链接', {}).get('url', ''),
-            '状态': properties.get('状态', {}).get('select', {}).get('name', '未知'),
-            '最后同步日期': properties.get('最后同步日期', {}).get('date', {}).get('start', ''),
-            '播放列表': properties.get('播放列表', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        }
-        tracks.append(track)
+        try:
+            track = {
+                '歌手': properties.get(next(prop for prop, config in properties.items() if config['type'] == 'title'), {}).get('title', [{}])[0].get('text', {}).get('content', '未知歌手'),
+                '歌名': properties.get('歌名', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '未知歌曲'),
+                '专辑': properties.get('专辑', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '未知专辑'),
+                '音乐链接': properties.get('音乐链接', {}).get('url', ''),
+                '状态': properties.get('状态', {}).get('select', {}).get('name', '未知'),
+                '最后同步日期': properties.get('最后同步日期', {}).get('date', {}).get('start', ''),
+                '播放列表': properties.get('播放列表', {}).get('rich_text', [{}])[0].get('text', {}).get('content', ''),
+                '歌单ID': properties.get('歌单ID', {}).get('number', 0),
+                '歌曲ID': properties.get('歌曲ID', {}).get('number', 0)
+            }
+            tracks.append(track)
+            print(f"Notion 记录 {index + 1}: 歌名 '{track['歌名']}', 歌单ID '{track['歌单ID']}', 歌曲ID '{track['歌曲ID']}'")
+        except Exception as e:
+            logger.error(f"Error processing record {index + 1}: {str(e)}")
+    
     return tracks
