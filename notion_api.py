@@ -61,6 +61,7 @@ def sync_track_to_notion(track, playlist_id, playlist_name, status, index, total
     
     current_time = datetime.now(china_tz)
     publish_time = datetime.fromtimestamp(track['publishTime']/1000, china_tz) if 'publishTime' in track else None
+    new_status_entry = f"{current_time.strftime('%Y/%m/%d')} {status}"
 
     properties = {
         title_property: {"title": [{"text": {"content": track.get('name', "未知歌曲")}}]},
@@ -73,19 +74,32 @@ def sync_track_to_notion(track, playlist_id, playlist_name, status, index, total
         "状态": {"select": {"name": status}},
         "最后同步日期": {"date": {"start": current_time.isoformat()}},
         "歌单ID": {"rich_text": [{"text": {"content": str(playlist_id)}}]},
-        "歌曲ID": {"rich_text": [{"text": {"content": str(track_id)}}]}
+        "歌曲ID": {"rich_text": [{"text": {"content": str(track_id)}}]},
+        "状态历史": {"rich_text": []},  # 初始化为空列表
     }
     
     existing_record = existing_records.get((str(track_id), str(playlist_id)))
 
     if existing_record:
         logger.info(f"更新现有记录，歌曲 {track_id}")
+        existing_status_history = existing_record['properties'].get('状态历史', {}).get('rich_text', [])
+        existing_status = existing_record['properties'].get('状态', {}).get('select', {}).get('name')
+        
+        if existing_status != status:
+            separator = {"text": {"content": " | "}}  # 使用竖线作为分隔符
+            new_status_history = existing_status_history + [separator, {"text": {"content": new_status_entry}}]
+            # 只保留最近的 5 条状态记录（包括分隔符）
+            properties["状态历史"] = {"rich_text": new_status_history[-9:]}  # 9 = 5 条记录 + 4 个分隔符
+        else:
+            properties["状态历史"] = {"rich_text": existing_status_history}
+
         notion.pages.update(
             page_id=existing_record['id'],
             properties=properties
         )
     else:
         logger.info(f"创建新记录，歌曲 {track_id}")
+        properties["状态历史"] = {"rich_text": [{"text": {"content": new_status_entry}}]}
         notion.pages.create(
             parent={"database_id": NOTION_DATABASE_ID},
             properties=properties
@@ -126,28 +140,27 @@ def mark_track_as_removed(track_id, playlist_id, playlist_name):
 @retry_on_failure
 def mark_track_as_removed_from_playlist(track_id, playlist_id, playlist_name):
     existing_records = get_notion_records()
-    if track_id in existing_records:
-        record = existing_records[track_id]
-        if record['properties']['歌单']['rich_text'][0]['text']['content'] == playlist_name:
-            current_time = datetime.now(china_tz)
-            notion.pages.update(
-                page_id=record['id'],
-                properties={
-                    "状态": {"select": {"name": "已取消收藏"}},
-                    "最后同步日期": {"date": {"start": current_time.isoformat()}},
-                }
-            )
-            return f"标记歌曲为已取消收藏: ID {track_id}"
-        else:
-            return f"歌曲 ID {track_id} 不属于当前同步的歌单，跳过处理"
+    key = (str(track_id), str(playlist_id))
+    if key in existing_records:
+        record = existing_records[key]
+        current_time = datetime.now(china_tz)
+        notion.pages.update(
+            page_id=record['id'],
+            properties={
+                "状态": {"select": {"name": "已取消收藏"}},
+                "最后同步日期": {"date": {"start": current_time.isoformat()}},
+            }
+        )
+        return f"标记歌曲为已取消收藏: ID {track_id}"
     else:
         return f"无法找到要处理的歌曲: ID {track_id}"
 
 @retry_on_failure
-def mark_track_as_unavailable(track_id):
+def mark_track_as_unavailable(track_id, playlist_id):
     existing_records = get_notion_records()
-    if track_id in existing_records:
-        record = existing_records[track_id]
+    key = (str(track_id), str(playlist_id))
+    if key in existing_records:
+        record = existing_records[key]
         current_time = datetime.now(china_tz)
         notion.pages.update(
             page_id=record['id'],
@@ -197,7 +210,8 @@ def verify_notion_database_structure():
             },
             '最后同步日期': {'date': {}},
             '歌单ID': {'rich_text': {}},
-            '歌曲ID': {'rich_text': {}}
+            '歌曲ID': {'rich_text': {}},
+            '状态历史': {'rich_text': {}},  # 添加这一行
         }
 
         properties_to_update = {}

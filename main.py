@@ -50,7 +50,10 @@ def compare_tracks(netease_tracks, notion_tracks, playlist_id, playlist_name):
 def needs_update(netease_track, notion_track):
     netease_status = get_status_from_fee(netease_track.get('fee', 0))
     notion_status = notion_track['状态']
-    return netease_status != notion_status
+    if netease_status != notion_status:
+        print(f"状态变化: {notion_status} -> {netease_status}")
+        return True
+    return False
 
 def get_status_from_fee(fee):
     if fee == 0:
@@ -107,7 +110,7 @@ def sync_playlist(playlist_id, playlist_index, total_playlists):
             result = mark_track_as_removed_from_playlist(track_id, playlist_id, playlist_name)
             print(result)
         else:
-            result = mark_track_as_unavailable(track_id)
+            result = mark_track_as_unavailable(track_id, playlist_id)
             print(result)
 
     print(f"'{playlist_name}' 同步完成")
